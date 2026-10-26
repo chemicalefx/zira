@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+  <meta name="theme-color" content="#0d0a12" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Zira" />
+  <title>Zira</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="icon" href="icons/icon-192.png" />
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Age gate -->
+  <div id="gate" class="overlay" hidden>
+    <div class="card gate-card">
+      <div class="avatar big">Z</div>
+      <h1>Adults only</h1>
+      <p>This app contains mature, uncensored AI roleplay intended for adults. All characters are fictional adults (18+).</p>
+      <p>By entering you confirm you are <strong>18 or older</strong> and that viewing adult content is legal where you live.</p>
+      <label class="check"><input type="checkbox" id="gate-check" /> I am 18 or older</label>
+      <div class="row">
+        <button id="gate-leave" class="btn ghost">Leave</button>
+        <button id="gate-enter" class="btn primary" disabled>Enter</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="app" class="app" hidden>
+    <header class="topbar">
+      <button id="btn-menu" class="icon-btn" aria-label="Chats">
+        <svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="title">
+        <div class="avatar" id="hdr-avatar">Z</div>
+        <div>
+          <div id="hdr-name" class="name">Zira</div>
+          <div id="hdr-status" class="status">Not loaded</div>
+        </div>
+      </div>
+      <button id="btn-new" class="icon-btn" aria-label="New chat">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <button id="btn-settings" class="icon-btn" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </header>
+
+    <div id="banner" class="banner" hidden></div>
+
+    <div id="loader" class="loader" hidden>
+      <div class="loader-text" id="loader-text">Preparing…</div>
+      <div class="bar"><div id="loader-bar"></div></div>
+      <div class="loader-sub" id="loader-sub">The model downloads once and is then stored on your phone for offline use.</div>
+    </div>
+
+    <main id="messages" class="messages" aria-live="polite"></main>
+
+    <div id="start" class="start" hidden>
+      <div class="avatar big" id="start-avatar">Z</div>
+      <h2 id="start-name">Zira</h2>
+      <p class="muted" id="start-model"></p>
+      <button id="btn-load" class="btn primary">Load model &amp; start</button>
+      <p class="tiny muted">Runs 100% on your device. Your chats never leave your phone.</p>
+    </div>
+
+    <form id="composer" class="composer">
+      <textarea id="input" rows="1" placeholder="Message Zira…" enterkeyhint="send"></textarea>
+      <button id="btn-send" class="send" type="submit" aria-label="Send">
+        <svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+      <button id="btn-stop" class="send stop" type="button" aria-label="Stop" hidden>
+        <svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+      </button>
+    </form>
+  </div>
+
+  <!-- Chats drawer -->
+  <aside id="drawer" class="drawer" hidden>
+    <div class="drawer-head">
+      <h3>Chats</h3>
+      <button id="drawer-close" class="icon-btn" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <button id="drawer-new" class="btn primary block">+ New chat</button>
+    <ul id="chat-list" class="chat-list"></ul>
+    <button id="drawer-clear" class="btn danger block">Delete all chats</button>
+  </aside>
+  <div id="scrim" class="scrim" hidden></div>
+
+  <!-- Settings -->
+  <div id="settings" class="overlay" hidden>
+    <div class="card settings-card">
+      <div class="drawer-head">
+        <h3>Settings</h3>
+        <button id="settings-close" class="icon-btn" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <label>Companion name <input id="set-name" maxlength="40" /></label>
+      <label>Your name (optional) <input id="set-user" maxlength="40" placeholder="What she calls you" /></label>
+      <label>Personality / system prompt
+        <textarea id="set-prompt" rows="9"></textarea>
+      </label>
+      <p class="tiny muted">Use {{char}} and {{user}} as placeholders. Characters must always be adults (18+).</p>
+      <label>Model <select id="set-model"></select></label>
+      <p id="set-model-note" class="tiny muted"></p>
+      <div class="grid2">
+        <label>Creativity <span id="temp-val"></span><input id="set-temp" type="range" min="0.2" max="1.5" step="0.05" /></label>
+        <label>Max reply length <span id="len-val"></span><input id="set-len" type="range" min="128" max="1024" step="64" /></label>
+      </div>
+      <div class="row wrap">
+        <button id="set-reset" class="btn ghost">Reset persona</button>
+        <button id="set-purge" class="btn danger">Delete downloaded models</button>
+        <button id="set-save" class="btn primary">Save</button>
+      </div>
+      <p class="tiny muted" id="gpu-info"></p>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
