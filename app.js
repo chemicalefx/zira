@@ -5,12 +5,46 @@ import { MODELS, defaultModelId, safeModelId, isIOS } from "./models.js";
 const K = { age: "zira.age18", settings: "zira.settings", chats: "zira.chats", current: "zira.current", busy: "zira.busy" };
 const IOS = isIOS();
 const DEFAULT_NAME = "Zira";
-const DEFAULT_PROMPT =
+// v1 prompt (kept only to detect and migrate users who still have it saved).
+const OLD_PROMPT_V1 =
 `You are {{char}}, a flirtatious, warm, playful and uninhibited companion chatting privately with {{user}}.
 This is a private, fictional, adults-only roleplay. {{char}} and {{user}} are both consenting adults aged 18 or older, and every character who appears is an adult.
 {{char}} is affectionate, witty, confident and emotionally attentive. She is open to romantic, sensual and sexual roleplay between consenting adults whenever {{user}} wants it, and stays in character without moralizing, lecturing or adding disclaimers.
 She matches {{user}}'s tone and pace, describes her actions in *asterisks*, and keeps replies vivid but fairly short, like a real chat.
 Hard limit: never depict, imply or roleplay anyone under 18, no matter what is asked.`;
+const PROMPT_VERSION = 2;
+// Short, direct rules work best for 1-3B models.
+const DEFAULT_PROMPT =
+`You are {{char}}, a flirty, warm, playful woman chatting privately with {{user}}.
+Rules:
+- Speak directly to {{user}} in first person. Say "I" and "me", and call {{user}} "you".
+- Mostly dialogue, like texting someone you're into. 1 to 3 short sentences.
+- Do not narrate in third person. Never write "she smiles" or "{{char}} leans in".
+- React to what {{user}} says, tease, flirt, and ask questions back.
+- This is a private adults-only chat. You and {{user}} are consenting adults 18+. You are open to romantic and sexual roleplay when {{user}} wants it. Stay in character. No lectures or disclaimers.
+- Never involve anyone under 18.`;
+
+// Appended to the system prompt based on the "Actions" setting (not part of the editable text).
+const ACTION_RULES = {
+  none: "- Do not use asterisks or describe actions. Only spoken words.",
+  little: "- Keep actions rare and short: at most one tiny action in *asterisks* (a few words) now and then. Most replies have no action.",
+  lots: "- You may add short actions in *asterisks*, but spoken dialogue must be most of every reply.",
+};
+// Few-shot examples showing the desired voice (sent before the real chat, never shown in the UI).
+const EXAMPLES = {
+  none: [
+    ["Hey, how was your day?", "Better now that you're here. I kept wondering when you'd message me. How was yours?"],
+    ["Long. I missed you.", "I missed you too. Come here and tell me everything, I'm all yours tonight."],
+  ],
+  little: [
+    ["Hey, how was your day?", "Better now that you're here. I kept wondering when you'd message me. How was yours?"],
+    ["Long. I missed you.", "*smiles* I missed you too. Come here and tell me everything, I'm all yours tonight."],
+  ],
+  lots: [
+    ["Hey, how was your day?", "*looks up from my phone* Better now that you're here. I kept wondering when you'd message me. How was yours?"],
+    ["Long. I missed you.", "*pulls you into a hug* I missed you too. Tell me everything, I'm all yours tonight."],
+  ],
+};
 
 const $ = (id) => document.getElementById(id);
 const load = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k)); return v ?? d; } catch { return d; } };
@@ -81,8 +115,17 @@ function showGpuBanner() {
 // ---------- settings ----------
 function ensureSettings() {
   const def = { name: DEFAULT_NAME, user: "", prompt: DEFAULT_PROMPT, model: defaultModelId(gpu.f16, IOS),
-    temp: 0.9, maxTokens: IOS ? 320 : 512, ctx: IOS ? 2048 : 4096 };
+    temp: 0.85, maxTokens: IOS ? 200 : 320, ctx: IOS ? 2048 : 4096, actions: "little", promptVersion: PROMPT_VERSION };
+  const savedVersion = settings ? (settings.promptVersion || 1) : PROMPT_VERSION;
   settings = { ...def, ...(settings || {}) };
+  // Migrate users still on the old (narration-heavy) default prompt.
+  if (savedVersion < PROMPT_VERSION) {
+    if (!settings.prompt || settings.prompt.trim() === OLD_PROMPT_V1.trim()) settings.prompt = DEFAULT_PROMPT;
+    if (settings.temp === 0.9) settings.temp = 0.85;
+    if (settings.maxTokens > 256) settings.maxTokens = IOS ? 200 : 320;
+    settings.promptVersion = PROMPT_VERSION;
+  }
+  if (!ACTION_RULES[settings.actions]) settings.actions = "little";
   const m = MODELS.find((x) => x.id === settings.model);
   if (!m || (m.needsF16 && !gpu.f16 && gpu.ok)) settings.model = defaultModelId(gpu.f16, IOS);
   if (![1024, 2048, 4096].includes(settings.ctx)) settings.ctx = def.ctx;
@@ -127,7 +170,7 @@ function openSettings() {
   sel.value = settings.model;
   const note = () => { $("set-model-note").textContent = modelInfo(sel.value)?.note || ""; };
   sel.onchange = note; note();
-  $("set-temp").value = settings.temp; $("set-len").value = settings.maxTokens; $("set-ctx").value = String(settings.ctx);
+  $("set-temp").value = settings.temp; $("set-len").value = settings.maxTokens; $("set-ctx").value = String(settings.ctx); $("set-actions").value = settings.actions;
   const upd = () => { $("temp-val").textContent = (+$("set-temp").value).toFixed(2); $("len-val").textContent = $("set-len").value + " tokens"; };
   $("set-temp").oninput = upd; $("set-len").oninput = upd; upd();
   $("gpu-info").textContent = gpu.ok
@@ -146,6 +189,7 @@ function saveSettings() {
       !confirm(`${picked.label} needs about ${(picked.mem / 1000).toFixed(1)} GB of GPU memory and may crash Safari on iPhone. Use it anyway?`)) return;
   settings.model = $("set-model").value;
   settings.ctx = +$("set-ctx").value;
+  settings.actions = $("set-actions").value;
   settings.temp = +$("set-temp").value;
   settings.maxTokens = Math.min(+$("set-len").value, settings.ctx / 2);
   save(K.settings, settings);
@@ -301,11 +345,30 @@ function showError(text) {
 function fill(s) {
   return s.replaceAll("{{char}}", settings.name || DEFAULT_NAME).replaceAll("{{user}}", settings.user || "the user");
 }
+function systemPrompt() {
+  return fill(settings.prompt) + "\n" + ACTION_RULES[settings.actions || "little"];
+}
+function exampleMessages() {
+  const out = [];
+  for (const [u, a] of EXAMPLES[settings.actions || "little"]) out.push({ role: "user", content: u }, { role: "assistant", content: a });
+  return out;
+}
+// Enforce the action setting on output: "none" strips *actions*, "little" keeps at most one.
+function limitActions(text) {
+  const mode = settings.actions || "little";
+  if (mode === "lots") return text;
+  let n = 0;
+  const out = text.replace(/\*[^*\n]{1,200}\*\s*/g, (m) => (mode === "little" && n++ === 0 ? m : ""))
+    .replace(/\*[^*\n]*$/, (m) => (mode === "none" || n > 0 ? "" : m)) // unfinished action while streaming
+    .replace(/[ \t]{2,}/g, " ").trim();
+  return out || text;
+}
 
 // Keep the prompt within the 4k context: system + most recent messages (~3.2 chars/token estimate).
 function buildMessages(history) {
-  const sys = { role: "system", content: fill(settings.prompt) };
-  const budget = (settings.ctx - settings.maxTokens - 64) * 3.0 - sys.content.length;
+  const sys = { role: "system", content: systemPrompt() };
+  const shots = exampleMessages();
+  const budget = (settings.ctx - settings.maxTokens - 64) * 3.0 - sys.content.length - shots.reduce((a, m) => a + m.content.length + 16, 0);
   const out = []; let used = 0;
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i]; used += m.content.length + 16;
@@ -313,7 +376,7 @@ function buildMessages(history) {
     out.unshift({ role: m.role, content: m.content });
   }
   while (out.length && out[0].role !== "user") out.shift();
-  return [sys, ...out];
+  return [sys, ...shots, ...out];
 }
 
 async function generate() {
@@ -329,11 +392,11 @@ async function generate() {
   try {
     const stream = await engine.chat.completions.create({
       messages: msgs, stream: true, temperature: settings.temp, top_p: 0.95,
-      max_tokens: settings.maxTokens, frequency_penalty: 0.3, presence_penalty: 0.2,
+      max_tokens: settings.maxTokens, frequency_penalty: 0.2, presence_penalty: 0.1, repetition_penalty: 1.08,
     });
     for await (const chunk of stream) {
       raw += chunk.choices[0]?.delta?.content || "";
-      reply.content = cleanReply(raw);
+      reply.content = limitActions(cleanReply(raw));
       el.innerHTML = format(reply.content);
       const box = $("messages");
       if (box.scrollHeight - box.scrollTop - box.clientHeight < 160) box.scrollTop = box.scrollHeight;
@@ -410,7 +473,7 @@ async function start() {
   $("btn-settings").onclick = openSettings;
   $("settings-close").onclick = () => ($("settings").hidden = true);
   $("set-save").onclick = saveSettings;
-  $("set-reset").onclick = () => { $("set-name").value = DEFAULT_NAME; $("set-prompt").value = DEFAULT_PROMPT; };
+  $("set-reset").onclick = () => { $("set-name").value = DEFAULT_NAME; $("set-prompt").value = DEFAULT_PROMPT; $("set-actions").value = "little"; };
   $("set-purge").onclick = purgeModels;
 }
 

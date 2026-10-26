@@ -1,7 +1,7 @@
 // App-shell cache. Kept deliberately tiny: the 6.6 MB WebLLM bundle is NOT precached
 // (it's cached on first use when the user taps Load), and model weights / self-hosted
 // model manifests are never touched here — WebLLM caches those itself.
-const VERSION = "zira-v2";
+const VERSION = "zira-v3";
 const SHELL = [
   "./", "./index.html", "./styles.css", "./app.js", "./models.js", "./worker.js", "./manifest.json",
   "./icons/icon-192.png", "./icons/apple-touch-icon.png",

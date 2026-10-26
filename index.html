@@ -106,6 +106,13 @@
         <textarea id="set-prompt" rows="9"></textarea>
       </label>
       <p class="tiny muted">Use {{char}} and {{user}} as placeholders. Characters must always be adults (18+).</p>
+      <label>Actions in *asterisks*
+        <select id="set-actions">
+          <option value="none">None · dialogue only</option>
+          <option value="little">A little · rare, short</option>
+          <option value="lots">Lots · more description</option>
+        </select>
+      </label>
       <label>Model <select id="set-model"></select></label>
       <p id="set-model-note" class="tiny muted"></p>
       <label>Memory (context length)
