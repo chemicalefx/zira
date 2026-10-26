@@ -1,12 +1,9 @@
-import {
-  CreateWebWorkerMLCEngine,
-  prebuiltAppConfig,
-  deleteModelAllInfoInCache,
-} from "./vendor/web-llm.js";
-import { MODELS, defaultModelId } from "./models.js";
+// NOTE: WebLLM (vendor/web-llm.js, ~6.6 MB) is imported lazily in getWebLLM(), only after an explicit tap.
+import { MODELS, defaultModelId, safeModelId, isIOS } from "./models.js";
 
 // ---------- constants & storage ----------
-const K = { age: "zira.age18", settings: "zira.settings", chats: "zira.chats", current: "zira.current" };
+const K = { age: "zira.age18", settings: "zira.settings", chats: "zira.chats", current: "zira.current", busy: "zira.busy" };
+const IOS = isIOS();
 const DEFAULT_NAME = "Zira";
 const DEFAULT_PROMPT =
 `You are {{char}}, a flirtatious, warm, playful and uninhibited companion chatting privately with {{user}}.
@@ -24,12 +21,25 @@ let settings = load(K.settings, null);
 let chats = load(K.chats, []);
 let currentId = load(K.current, null);
 let gpu = { ok: false, f16: false, reason: "" };
-let engine = null, loadedModel = null, loading = false, generating = false;
+let engine = null, worker = null, loadedModel = null, loading = false, generating = false;
+let crashNotice = null;
 
-const appConfig = {
-  ...prebuiltAppConfig,
-  model_list: [...prebuiltAppConfig.model_list, ...MODELS.filter((m) => m.custom).map((m) => m.custom)],
-};
+let webllm = null, appConfig = null;
+async function getWebLLM() {
+  if (!webllm) {
+    webllm = await import("./vendor/web-llm.js");
+    appConfig = {
+      ...webllm.prebuiltAppConfig,
+      model_list: [...webllm.prebuiltAppConfig.model_list, ...MODELS.filter((m) => m.custom).map((m) => m.custom)],
+    };
+  }
+  return webllm;
+}
+
+// Crash guard: a flag is written before loading/generating and cleared afterwards. If the page
+// opens and it is still set, Safari killed the tab mid-way (almost always out of memory).
+function setBusy(phase) { localStorage.setItem(K.busy, JSON.stringify({ phase, model: settings.model, ctx: settings.ctx, t: Date.now() })); }
+function clearBusy() { localStorage.removeItem(K.busy); }
 
 // ---------- age gate ----------
 function initGate() {
@@ -58,6 +68,7 @@ async function detectGPU() {
 
 function showGpuBanner() {
   const b = $("banner");
+  if (gpu.ok && crashNotice) { b.hidden = false; b.innerHTML = `<b>Recovered from a crash.</b><br>${crashNotice}`; return; }
   if (gpu.ok) { b.hidden = true; return; }
   b.hidden = false;
   b.innerHTML = `<b>WebGPU isn't available in this browser.</b><br>
@@ -69,10 +80,24 @@ function showGpuBanner() {
 
 // ---------- settings ----------
 function ensureSettings() {
-  const def = { name: DEFAULT_NAME, user: "", prompt: DEFAULT_PROMPT, model: defaultModelId(gpu.f16), temp: 0.9, maxTokens: 512 };
+  const def = { name: DEFAULT_NAME, user: "", prompt: DEFAULT_PROMPT, model: defaultModelId(gpu.f16, IOS),
+    temp: 0.9, maxTokens: IOS ? 320 : 512, ctx: IOS ? 2048 : 4096 };
   settings = { ...def, ...(settings || {}) };
   const m = MODELS.find((x) => x.id === settings.model);
-  if (!m || (m.needsF16 && !gpu.f16 && gpu.ok)) settings.model = defaultModelId(gpu.f16);
+  if (!m || (m.needsF16 && !gpu.f16 && gpu.ok)) settings.model = defaultModelId(gpu.f16, IOS);
+  if (![1024, 2048, 4096].includes(settings.ctx)) settings.ctx = def.ctx;
+  // Previous session died while loading/generating -> fall back to the smallest model, small context.
+  const busy = load(K.busy, null);
+  if (busy) {
+    clearBusy();
+    const safe = safeModelId(gpu.f16);
+    const prev = MODELS.find((x) => x.id === busy.model);
+    crashNotice = `Last time the app closed while ${busy.phase === "load" ? "loading" : "replying with"} ` +
+      `<b>${prev ? prev.label : busy.model}</b> (iPhone memory limit). Switched to the smallest model ` +
+      `(${MODELS.find((x) => x.id === safe).label}) with a 1024-token context. You can change this in Settings.`;
+    settings.model = safe; settings.ctx = 1024; settings.maxTokens = Math.min(settings.maxTokens, 256);
+  }
+  if (settings.maxTokens > settings.ctx / 2) settings.maxTokens = settings.ctx / 2;
   save(K.settings, settings);
 }
 const modelInfo = (id) => MODELS.find((m) => m.id === id);
@@ -95,14 +120,14 @@ function openSettings() {
     const o = document.createElement("option");
     o.value = m.id;
     const unsupported = m.needsF16 && !gpu.f16;
-    o.textContent = m.label + (m.uncensored ? " 🔓" : "") + (unsupported ? " (needs shader-f16)" : "");
+    o.textContent = m.label + (m.uncensored ? " 🔓" : "") + (m.heavy && IOS ? " ⚠️ may crash" : "") + (unsupported ? " (needs shader-f16)" : "");
     o.disabled = unsupported && gpu.ok;
     sel.appendChild(o);
   }
   sel.value = settings.model;
   const note = () => { $("set-model-note").textContent = modelInfo(sel.value)?.note || ""; };
   sel.onchange = note; note();
-  $("set-temp").value = settings.temp; $("set-len").value = settings.maxTokens;
+  $("set-temp").value = settings.temp; $("set-len").value = settings.maxTokens; $("set-ctx").value = String(settings.ctx);
   const upd = () => { $("temp-val").textContent = (+$("set-temp").value).toFixed(2); $("len-val").textContent = $("set-len").value + " tokens"; };
   $("set-temp").oninput = upd; $("set-len").oninput = upd; upd();
   $("gpu-info").textContent = gpu.ok
@@ -116,13 +141,17 @@ function saveSettings() {
   settings.name = $("set-name").value.trim() || DEFAULT_NAME;
   settings.user = $("set-user").value.trim();
   settings.prompt = $("set-prompt").value.trim() || DEFAULT_PROMPT;
+  const picked = MODELS.find((m) => m.id === $("set-model").value);
+  if (picked && picked.heavy && IOS && picked.id !== prevModel &&
+      !confirm(`${picked.label} needs about ${(picked.mem / 1000).toFixed(1)} GB of GPU memory and may crash Safari on iPhone. Use it anyway?`)) return;
   settings.model = $("set-model").value;
+  settings.ctx = +$("set-ctx").value;
   settings.temp = +$("set-temp").value;
-  settings.maxTokens = +$("set-len").value;
+  settings.maxTokens = Math.min(+$("set-len").value, settings.ctx / 2);
   save(K.settings, settings);
   applyPersonaUI();
   $("settings").hidden = true;
-  if (prevModel !== settings.model && (engine || loading)) loadModel();
+  if ((prevModel !== settings.model || loadedCtx !== settings.ctx) && engine && !loading) unloadEngine().then(refreshView);
   else refreshView();
 }
 
@@ -209,6 +238,14 @@ function updateControls() {
 function setStatus(t) { $("hdr-status").textContent = t; }
 
 // ---------- engine ----------
+let loadedCtx = null;
+async function unloadEngine() {
+  try { await engine?.unload(); } catch {}
+  try { worker?.terminate(); } catch {}
+  engine = null; worker = null; loadedModel = null; loadedCtx = null;
+  setStatus("Tap Load to start");
+}
+
 async function loadModel() {
   if (!gpu.ok) { showGpuBanner(); return; }
   if (loading) return;
@@ -218,22 +255,26 @@ async function loadModel() {
   setStatus("Loading " + (info?.label || settings.model) + "…");
   $("loader-text").textContent = "Starting…"; $("loader-bar").style.width = "0%";
   try {
+    if (engine) await unloadEngine(); // free GPU memory before loading another model
     navigator.storage?.persist?.().catch(() => {});
+    const { CreateWebWorkerMLCEngine } = await getWebLLM();
     const progress = (r) => {
       $("loader-text").textContent = r.text || "Loading…";
       $("loader-bar").style.width = Math.round((r.progress || 0) * 100) + "%";
     };
-    if (engine) {
-      await engine.reload(settings.model);
-    } else {
-      const worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
-      engine = await CreateWebWorkerMLCEngine(worker, settings.model, { appConfig, initProgressCallback: progress });
-    }
-    loadedModel = settings.model;
-    setStatus("Online · on-device · " + (info?.label.split("·")[1]?.trim() || settings.model));
+    // Small context + prefill chunk keep the KV cache and temporary buffers small.
+    const chatOpts = { context_window_size: settings.ctx, prefill_chunk_size: settings.ctx <= 1024 ? 256 : 512 };
+    setBusy("load");
+    worker = new Worker(new URL("./worker.js", import.meta.url), { type: "module" });
+    engine = await CreateWebWorkerMLCEngine(worker, settings.model, { appConfig, initProgressCallback: progress }, chatOpts);
+    clearBusy();
+    loadedModel = settings.model; loadedCtx = settings.ctx;
+    setStatus("Online · " + (info?.label || settings.model));
   } catch (e) {
+    clearBusy();
     console.error(e);
-    engine = null; loadedModel = null;
+    try { worker?.terminate(); } catch {}
+    engine = null; worker = null; loadedModel = null;
     setStatus("Failed to load");
     showError(loadErrorText(e));
   } finally {
@@ -264,7 +305,7 @@ function fill(s) {
 // Keep the prompt within the 4k context: system + most recent messages (~3.2 chars/token estimate).
 function buildMessages(history) {
   const sys = { role: "system", content: fill(settings.prompt) };
-  const budget = (4096 - settings.maxTokens - 64) * 3.2 - sys.content.length;
+  const budget = (settings.ctx - settings.maxTokens - 64) * 3.0 - sys.content.length;
   const out = []; let used = 0;
   for (let i = history.length - 1; i >= 0; i--) {
     const m = history[i]; used += m.content.length + 16;
@@ -284,6 +325,7 @@ async function generate() {
   refreshView();
   const el = $("messages").lastElementChild; el.classList.add("typing");
   let raw = "";
+  setBusy("generate");
   try {
     const stream = await engine.chat.completions.create({
       messages: msgs, stream: true, temperature: settings.temp, top_p: 0.95,
@@ -297,12 +339,14 @@ async function generate() {
       if (box.scrollHeight - box.scrollTop - box.clientHeight < 160) box.scrollTop = box.scrollHeight;
     }
   } catch (e) {
+    clearBusy();
     console.error(e);
     if (!reply.content) chat.messages.pop();
     generating = false; persistChats(); refreshView();
     showError("Generation error: " + (e?.message || e) + (/context/i.test(String(e)) ? " — start a new chat." : ""));
     return;
   }
+  clearBusy();
   if (!reply.content.trim()) reply.content = "…";
   generating = false; persistChats(); refreshView();
 }
@@ -330,6 +374,7 @@ function stop() { if (engine && generating) engine.interruptGenerate(); }
 
 async function purgeModels() {
   if (!confirm("Delete all downloaded model files from this device? You'll need to download again.")) return;
+  const { deleteModelAllInfoInCache } = await getWebLLM();
   for (const m of MODELS) { try { await deleteModelAllInfoInCache(m.id, appConfig); } catch {} }
   alert("Downloaded models deleted.");
 }
@@ -369,7 +414,27 @@ async function start() {
   $("set-purge").onclick = purgeModels;
 }
 
-if ("serviceWorker" in navigator) {
+// ---------- safe mode: ?reset=1 (keeps chats) or ?reset=all ----------
+async function handleReset() {
+  const q = new URLSearchParams(location.search).get("reset");
+  if (!q) return false;
+  document.body.innerHTML = '<p style="padding:40px;text-align:center;color:#a597b5">Resetting Zira…</p>';
+  try {
+    const keepChats = q !== "all";
+    for (const k of Object.keys(localStorage)) {
+      if (!k.startsWith("zira.")) continue;
+      if (keepChats && (k === K.chats || k === K.current || k === K.age)) continue;
+      localStorage.removeItem(k);
+    }
+    if (window.caches) for (const k of await caches.keys()) await caches.delete(k); // app shell + WebLLM model caches
+    if (indexedDB.databases) for (const db of await indexedDB.databases()) { try { indexedDB.deleteDatabase(db.name); } catch {} }
+    if (navigator.serviceWorker) for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister();
+  } catch (e) { console.warn("reset", e); }
+  location.replace(location.pathname);
+  return true;
+}
+
+if ("serviceWorker" in navigator && !new URLSearchParams(location.search).has("reset")) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch((e) => console.warn("SW", e)));
 }
-initGate();
+handleReset().then((r) => { if (!r) initGate(); });
